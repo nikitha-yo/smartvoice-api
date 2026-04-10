@@ -6,22 +6,18 @@ import traceback
 gesture_bp = Blueprint("gesture", __name__)
 
 GESTURE_SENTENCES = {
-    "hello":    "Hello! How are you today?",
-    "help":     "Please help me. I need assistance.",
-    "water":    "I am thirsty. Can I have some water?",
-    "food":     "I am hungry. I need food please.",
-    "pain":     "I am in pain. Please help me.",
-    "bathroom": "I need to use the bathroom.",
-    "yes":      "Yes, I agree. That is correct.",
-    "no":       "No, I do not agree with that.",
-    "thanks":   "Thank you very much. I appreciate it.",
-    "stop":     "Please stop. I need a moment.",
-    "doctor":   "Please call a doctor for me.",
-    "tired":    "I am feeling very tired. I need to rest.",
-    "love":     "I love you.",
-    "good":     "I am feeling good today.",
-    "bad":      "I am not feeling well.",
-    "call":     "Please call someone for me.",
+    "hello":       "Hello! How are you today?",
+    "yes":         "Yes.",
+    "no":          "No.",
+    "help":        "Please help me. I need assistance.",
+    "stop":        "Please stop.",
+    "water":       "I need water, please.",
+    "pain":        "I am in pain. Please help me.",
+    "call":        "Please call someone for me.",
+    "doctor":      "Please call a doctor for me.",
+    "bathroom":    "I need to use the bathroom.",
+    "thanks":      "Thank you.",
+    "did_you_eat": "Did you eat?",
 }
 
 
@@ -36,7 +32,8 @@ def predict():
         if not landmarks or len(landmarks) != 21:
             return jsonify({"error": "Expected 21 landmarks"}), 400
 
-        gesture, confidence = classify_landmarks(landmarks)
+        motion = float(data.get("motion", 0.0) or 0.0)
+        gesture, confidence = classify_landmarks(landmarks, motion=motion)
         sentence = GESTURE_SENTENCES.get(gesture, f"I want to say: {gesture}")
 
         conn = get_conn()

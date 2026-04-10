@@ -38,10 +38,16 @@ def _load_model():
 _load_model()
 
 LABELS = [
-    "hello", "help", "water", "food", "pain", "bathroom",
-    "yes", "no", "thanks", "stop", "doctor", "tired",
-    "love", "good", "bad", "call",
+    "hello", "yes", "no", "help", "stop", "water",
+    "pain", "call", "doctor", "bathroom", "thanks",
+    "did_you_eat",
 ]
+
+# Tuned thresholds for webcam-scale normalized landmarks.
+MOTION_HELLO_MIN = 0.014
+PINCH_PAIN_MIN = 0.34
+PEACE_GAP_MIN = 0.18
+DID_YOU_EAT_THUMB_GAP_MIN = 0.22
 
 # ── geometry helpers ──────────────────────────────────────────────────────────
 
@@ -58,10 +64,11 @@ def _dist(a, b):
 
 
 def _finger_extended(lm, tip, pip, mcp, wrist):
-    """True if finger tip is farther from wrist than MCP (finger is open)."""
-    tip_d = _dist(_pt(lm, tip),   _pt(lm, wrist))
-    mcp_d = _dist(_pt(lm, mcp),   _pt(lm, wrist))
-    return tip_d > mcp_d * 1.1
+    """True if finger is open based on distance + joint angle hints."""
+    tip_d = _dist(_pt(lm, tip), _pt(lm, wrist))
+    mcp_d = _dist(_pt(lm, mcp), _pt(lm, wrist))
+    pip_d = _dist(_pt(lm, pip), _pt(lm, wrist))
+    return tip_d > max(mcp_d * 1.12, pip_d * 1.06)
 
 
 def _fingers_open(lm):
@@ -74,66 +81,86 @@ def _fingers_open(lm):
         "pinky":  _finger_extended(lm, 20, 18, 17, wrist),
     }
 
+
+def _all_closed_except(fo, keep_open):
+    return all((name in keep_open) == is_open for name, is_open in fo.items())
+
 # ── rule-based classifier ─────────────────────────────────────────────────────
 
-def _rule_classify(lm):
+def _rule_classify(lm, motion=0.0):
     fo = _fingers_open(lm)
     n_open = sum(fo.values())
+    thumb_tip = _pt(lm, 4)
+    index_tip = _pt(lm, 8)
+    index_mcp = _pt(lm, 5)
+    middle_tip = _pt(lm, 12)
+    wrist = _pt(lm, 0)
+
+    pinch_dist = _dist(thumb_tip, index_tip)
+    palm_scale = max(_dist(wrist, _pt(lm, 9)), 1e-6)
+    pinch_ratio = pinch_dist / palm_scale
+
+    thumb_index_gap = abs(thumb_tip[0] - index_tip[0]) / palm_scale
+    index_middle_gap = abs(middle_tip[0] - index_tip[0]) / palm_scale
+    index_dx = index_tip[0] - index_mcp[0]
+    index_dy = index_tip[1] - index_mcp[1]
+    index_is_vertical = abs(index_dy) > abs(index_dx) * 1.1
 
     # YES  — fist (all closed)
     if n_open == 0:
         return "yes", 0.92
 
-    # ALL OPEN → hello or stop
+    # ALL OPEN -> hello or stop (motion separates both)
     if n_open == 5:
-        # thumb tip y < wrist y  (hand upright) → hello wave
-        if _pt(lm, 4)[1] < _pt(lm, 0)[1]:
-            return "hello", 0.88
-        return "stop", 0.85
+        if motion > MOTION_HELLO_MIN:
+            return "hello", 0.90
+        return "stop", 0.88
 
-    # ONLY INDEX → pointing → help
-    if fo["index"] and not fo["middle"] and not fo["ring"] and not fo["pinky"]:
+    # ONLY INDEX + thumb folded -> help
+    if _all_closed_except(fo, {"index"}):
         return "help", 0.87
 
+    # ONLY INDEX + thumb open -> did_you_eat
+    if _all_closed_except(fo, {"thumb", "index"}):
+        if index_is_vertical and thumb_index_gap >= DID_YOU_EAT_THUMB_GAP_MIN:
+            return "did_you_eat", 0.84
+        if (not index_is_vertical) and pinch_ratio >= PINCH_PAIN_MIN:
+            return "pain", 0.84
+        return "pain", 0.72
+
     # INDEX + MIDDLE (peace/V) → no
-    if fo["index"] and fo["middle"] and not fo["ring"] and not fo["pinky"]:
+    if _all_closed_except(fo, {"index", "middle"}) and index_middle_gap >= PEACE_GAP_MIN:
         return "no", 0.89
 
     # THUMB + PINKY (shaka) → call
-    if fo["thumb"] and fo["pinky"] and not fo["index"] and not fo["middle"] and not fo["ring"]:
+    if _all_closed_except(fo, {"thumb", "pinky"}):
         return "call", 0.86
 
-    # THUMB ONLY → love (heart)
-    if fo["thumb"] and not fo["index"] and not fo["middle"] and not fo["ring"] and not fo["pinky"]:
-        return "love", 0.82
-
     # PINKY ONLY → water (ASL W approximation)
-    if fo["pinky"] and not fo["index"] and not fo["middle"] and not fo["ring"] and not fo["thumb"]:
+    if _all_closed_except(fo, {"pinky"}):
         return "water", 0.80
 
     # 3 fingers (index+middle+ring) → doctor
-    if fo["index"] and fo["middle"] and fo["ring"] and not fo["pinky"]:
+    if _all_closed_except(fo, {"index", "middle", "ring"}):
         return "doctor", 0.81
 
     # 4 fingers (no thumb) → bathroom
-    if fo["index"] and fo["middle"] and fo["ring"] and fo["pinky"] and not fo["thumb"]:
+    if _all_closed_except(fo, {"index", "middle", "ring", "pinky"}):
         return "bathroom", 0.83
 
-    # Thumb + index (gun shape) → pain
-    if fo["thumb"] and fo["index"] and not fo["middle"] and not fo["ring"] and not fo["pinky"]:
-        return "pain", 0.84
-
     # Thumb + index + middle → thanks (ASL flat hand near chin)
-    if fo["thumb"] and fo["index"] and fo["middle"] and not fo["ring"] and not fo["pinky"]:
+    if _all_closed_except(fo, {"thumb", "index", "middle"}):
         return "thanks", 0.79
 
-    # Default — tired (closed, relaxed)
-    return "tired", 0.60
+    # More robust fallback than forcing one label.
+    if fo["index"] and not fo["middle"] and not fo["ring"] and not fo["pinky"]:
+        return "help", 0.58
+    return "stop", 0.52
 
 
 # ── public API ────────────────────────────────────────────────────────────────
 
-def classify_landmarks(landmarks):
+def classify_landmarks(landmarks, motion=0.0):
     """
     landmarks: list of 21 dicts  {"x": float, "y": float, "z": float}
                or list of 3-element lists [[x,y,z], ...]
@@ -154,4 +181,4 @@ def classify_landmarks(landmarks):
         return LABELS[idx], float(probs[idx])
 
     # Rule-based path
-    return _rule_classify(landmarks)
+    return _rule_classify(landmarks, motion=motion)
