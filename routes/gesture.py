@@ -9,7 +9,9 @@ GESTURE_SENTENCES = {
     "hello":       "Hello! How are you today?",
     "yes":         "Yes.",
     "no":          "No.",
+    "good":        "Good.",
     "help":        "Please help me. I need assistance.",
+    "sorry":       "Sorry.",
     "stop":        "Please stop.",
     "water":       "I need water, please.",
     "pain":        "I am in pain. Please help me.",
@@ -17,7 +19,9 @@ GESTURE_SENTENCES = {
     "doctor":      "Please call a doctor for me.",
     "bathroom":    "I need to use the bathroom.",
     "thanks":      "Thank you.",
+    "hungry":      "I am hungry.",
     "did_you_eat": "Did you eat?",
+    "unknown":     "",
 }
 
 
@@ -36,13 +40,15 @@ def predict():
         gesture, confidence = classify_landmarks(landmarks, motion=motion)
         sentence = GESTURE_SENTENCES.get(gesture, f"I want to say: {gesture}")
 
-        conn = get_conn()
-        conn.execute(
-            "INSERT INTO gesture_history (gesture, sentence, language) VALUES (?, ?, ?)",
-            (gesture, sentence, language),
-        )
-        conn.commit()
-        conn.close()
+        # Avoid polluting history with unknown/low-confidence noise.
+        if gesture != "unknown" and sentence and confidence >= 0.70:
+            conn = get_conn()
+            conn.execute(
+                "INSERT INTO gesture_history (gesture, sentence, language) VALUES (?, ?, ?)",
+                (gesture, sentence, language),
+            )
+            conn.commit()
+            conn.close()
 
         return jsonify({
             "gesture":    gesture,
